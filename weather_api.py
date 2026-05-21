@@ -1,9 +1,3 @@
-"""
-Модуль для работы с публичным API OpenWeatherMap.
-
-Инкапсулирует всю логику HTTP-запросов и обработки ошибок.
-Документация API: https://openweathermap.org/current
-"""
 import asyncio
 import logging
 import os
@@ -13,23 +7,12 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
-# API-ключ читаем из переменных окружения (см. .env.example).
-# Никогда не храните ключ в коде и не коммитьте его в репозиторий.
-API_KEY = os.getenv("OPENWEATHER_API_KEY")
-BASE_URL = "https://api.openweathermap.org/data/2.5/weather"
+WEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
+FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
 
-# Таймаут для всех HTTP-запросов к API (секунды)
 REQUEST_TIMEOUT = 10
 
-
 class WeatherAPIError(Exception):
-    """
-    Кастомное исключение, описывающее ошибку при обращении к API погоды.
-
-    Атрибуты:
-        message — текст ошибки для отображения пользователю.
-        code    — HTTP-код ответа (если был получен).
-    """
 
     def __init__(self, message: str, code: Optional[int] = None) -> None:
         self.message = message
@@ -40,33 +23,27 @@ class WeatherAPIError(Exception):
         return f"[{self.code}] {self.message}" if self.code else self.message
 
 
-async def _make_request(params: dict) -> dict:
-    """
-    Внутренняя функция: выполняет GET-запрос к API погоды.
+async def _make_request(url: str, params: dict) -> dict:
+    API_KEY = os.getenv("OPENWEATHER_API_KEY")
 
-    К переданным `params` автоматически добавляются ключ API,
-    единицы измерения (Цельсий) и язык описаний (русский).
-    """
     if not API_KEY:
         raise WeatherAPIError(
             "API-ключ OpenWeatherMap не задан. "
             "Установите переменную окружения OPENWEATHER_API_KEY."
         )
 
-    # Базовые параметры запроса
     query = {
         **params,
         "appid": API_KEY,
-        "units": "metric",  # температура в градусах Цельсия
-        "lang": "ru",       # описания на русском
+        "units": "metric",  
+        "lang": "ru",      
     }
 
     timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
 
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(BASE_URL, params=query) as response:
-                # Безопасно парсим JSON, даже при ошибочных статусах
+            async with session.get(url, params=query) as response:
                 try:
                     data = await response.json()
                 except aiohttp.ContentTypeError:
@@ -76,7 +53,6 @@ async def _make_request(params: dict) -> dict:
                     )
 
                 if response.status != 200:
-                    # OpenWeatherMap в ошибках возвращает поле "message"
                     raise WeatherAPIError(
                         message=data.get("message", "Неизвестная ошибка API"),
                         code=response.status,
@@ -87,30 +63,32 @@ async def _make_request(params: dict) -> dict:
     except asyncio.TimeoutError as exc:
         raise WeatherAPIError("Превышено время ожидания ответа от API.") from exc
     except aiohttp.ClientError as exc:
-        # Сетевые проблемы: DNS, недоступность хоста и т. п.
         raise WeatherAPIError(f"Сетевая ошибка: {exc}") from exc
 
-
 async def get_weather_by_city(city: str) -> dict:
-    """
-    Получить текущую погоду по названию города.
-
-    :param city: название города (на русском или английском).
-    :return: словарь с данными о погоде в формате OpenWeatherMap.
-    :raises WeatherAPIError: при любой ошибке запроса.
-    """
     logger.info("Requesting weather by city: %s", city)
-    return await _make_request({"q": city})
+    return await _make_request(WEATHER_URL, {"q": city})
 
 
 async def get_weather_by_coords(lat: float, lon: float) -> dict:
-    """
-    Получить текущую погоду по географическим координатам.
-
-    :param lat: широта.
-    :param lon: долгота.
-    :return: словарь с данными о погоде в формате OpenWeatherMap.
-    :raises WeatherAPIError: при любой ошибке запроса.
-    """
     logger.info("Requesting weather by coords: %s, %s", lat, lon)
-    return await _make_request({"lat": lat, "lon": lon})
+    return await _make_request(WEATHER_URL, {"lat": lat, "lon": lon})
+
+async def get_precip_probability(params: dict) -> Optional[int]:
+    try:
+        data = await _make_request(FORECAST_URL, params)
+        forecast_list = data.get("list", [])
+        if not forecast_list:
+            return None
+        pop = forecast_list[0].get("pop")
+        if pop is None:
+            return None
+        return round(pop * 100)
+    except WeatherAPIError as exc:
+        logger.warning("Could not fetch precipitation probability: %s", exc)
+        return None
+
+
+async def get_forecast(params: dict) -> dict:
+    logger.info("Requesting full forecast: %s", params)
+    return await _make_request(FORECAST_URL, params)
